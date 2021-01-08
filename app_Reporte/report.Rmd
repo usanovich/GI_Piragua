@@ -1,0 +1,389 @@
+---
+author: "Gestión de la Información-Piragua"
+output: pdf_document
+header-includes:
+  - \usepackage{comment}
+  - \usepackage{booktabs}
+  - \usepackage{xcolor}
+  - \usepackage{longtable}
+  - \usepackage{multirow}
+  - \usepackage{wrapfig}
+  - \usepackage{float}
+  - \usepackage{colortbl}
+  - \usepackage{pdflscape}
+  - \usepackage{tabu}
+  - \usepackage{threeparttable}
+  - \usepackage{threeparttablex}
+  - \usepackage[normalem]{ulem}
+  - \usepackage{makecell}
+  - \usepackage{xcolor}
+params:
+  fechas: NA
+  n : NA
+  terri : NA
+  est: NA
+---
+
+```{r include=FALSE}
+knitr::opts_chunk$set(comment = NA)
+```
+
+```{r, echo = FALSE}
+
+x = params$n
+
+cadena <-  function(x){
+  if(x == T){
+    texto = "Reporte de niveles"
+  } else{
+    texto = "Reporte de precipitación"
+  }
+}
+
+texto = cadena(params$n)
+```
+
+---
+title: "`r texto`  del `r params$fechas[1]` al `r params$fechas[2]` obtenidos a partir de la red automática de Piragua"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(urltools)
+library(lubridate)
+library(dplyr)
+library(kableExtra)
+options(timeout=500)
+options(scipen=999)
+
+if(params$n == T) {
+  
+# Definimos temporalidad para extracción de datos
+
+comenzar <-  as.character(params$fechas[1])
+finalizar <-  as.character(params$fechas[2] + 1)
+
+estaciones <-  read.csv("http://www.piraguacorantioquia.com.co/redes_nuevo/images/Estaciones_Piragua.csv")
+
+estaciones_limni <-  estaciones %>%
+  filter(tipo == "Limnígrafo", territorial %in% params$terri)
+
+
+
+get_data_limni <-  function(estacion, inicio, final){
+  url="https://www.piraguacorantioquia.com.co/api/nivel/1017?date_estacion__gte=2020-01-01&date_estacion__lt=2020-01-02&downloadfile"
+  url2 = param_set(url, "date_estacion__gte", inicio)
+  url3 = param_set(url2, "date_estacion__lt", final)
+  data = read.csv(gsub("1017", estacion, url3))
+  data = na.omit(data)
+  data = data[!(data$fechas == ""), ] # Para borrar campos de fechas vacíos
+  data$fechas = as.POSIXct(data$fechas, "%Y-%m-%d %H-%M")
+  data2 = data %>%
+    group_by(fechas) %>%
+    dplyr::summarise(nivel = mean(nivel)) #Cambiar muestra, nivel o caudal
+}
+
+limni <-  list() # Creamos una lista vacía
+
+for (i in 1:nrow(estaciones_limni)) {
+    
+  estacion = estaciones_limni$codigo[i]
+  limni[[i]] = get_data_limni(estacion, comenzar, finalizar)
+    
+}
+
+# Agregamos una columna de municipios a cada dataframe de la lista
+  
+for (i in 1:length(limni)) {
+    
+  if (nrow(limni[[i]]) > 0) {
+    
+      limni[[i]] = data.frame(limni[[i]],
+                              municipios = estaciones_limni[i,4],
+                              territoriales = estaciones_limni[i,5],
+                              fuente = estaciones_limni[i,7],
+                              codigo = estaciones_limni[i,2])
+  }
+}
+
+
+#Para eliminar listas con 0 filas
+limni <-  limni[sapply(limni, nrow) > 0]
+
+
+#Creamos un dataframe global con la lista de estaciones que tienen datos
+limni <-  do.call(rbind, limni)
+
+#Agrupamos por municipios y hallamos su promedio
+limni_prom <-  limni %>%
+  group_by(municipios, territoriales, fuente, codigo) %>%
+  dplyr::summarise(medio = mean(nivel)) # Nivel, caudal o muestra
+
+#Agrupamos por municipios y hallamos su máximo
+limni_max <-  limni %>%
+  group_by(municipios, territoriales, fuente, codigo) %>%
+  dplyr::summarise(máximo = max(nivel)) # Nivel, caudal o muestra
+
+#Agrupamos por municipios y hallamos su mínimo
+limni_min <-  limni %>%
+  group_by(municipios, territoriales, fuente, codigo) %>%
+  dplyr::summarise(mínimo = min(nivel)) # Nivel, caudal o muestra
+
+limni_count <- limni %>% 
+  group_by(municipios, territoriales, fuente, codigo) %>% 
+  dplyr::summarise(count = n())
+
+# Creamos dataset con resumen
+limni_resumen <-  data.frame(limni_prom, limni_max$máximo,
+                           limni_min$mínimo, limni_count$count)
+
+colnames(limni_resumen) <-  c("Municipio", "Territorial", 
+                              "Fuente", "Promedio",
+                            "Máximo", "Mínimo", "Codigo", "Porcentaje")
+
+conteo = function(f){
+  diferencia = difftime(max(f), min(f), 
+                        units = c("mins"))/5
+}
+
+df_count <- limni %>% group_by(municipios, fuente, codigo) %>% 
+  summarise(dif = conteo(fechas))
+
+df_count$dif <- as.numeric(df_count$dif) 
+
+porce_count <- data.frame((limni_resumen$Porcentaje*100)/df_count$dif)
+
+limni_r <- data.frame(limni_resumen[,1:6], porce_count)
+
+colnames(limni_r) <- c("Municipio", "Territorial", 
+                    "Fuente", "Promedio", "Máximo", 
+                    "Mínimo", "Porcentaje")
+
+limni_r$Máximo <- round(limni_r$Promedio, digits = 2)
+limni_r$Promedio <- round(limni_r$Promedio, digits = 2)
+limni_r$Porcentaje <- round(limni_r$Porcentaje, digits = 1)
+porc_prom <- round(mean(limni_r$Porcentaje), digits = 1)
+
+.
+n_estaciones <-  nrow(limni_resumen)
+n_total <-  nrow(estaciones_limni)
+porcentaje <-  (n_estaciones*100)/n_total
+porcentaje <- round(porcentaje, digits = 1)
+
+if(params$est == T){
+  
+max_fechas <- limni %>% 
+  group_by(municipios, fuente) %>% 
+  summarise(estado = max(as.Date(fechas)))
+
+f = c()
+for (i in 1:nrow(max_fechas)) {
+  if(max_fechas[i,3] == Sys.Date()){
+    f[i] = "Activa"
+  } else{
+    f[i] = "Inactiva"
+  }
+}
+
+f <- data.frame(f)
+
+limni_r <- data.frame(limni_r, f)
+
+  colnames(limni_r) <- c("Municipio", "Territorial", 
+                    "Fuente", "Promedio (m)", "Máximo (m)",
+                    "Mínimo", "Porcentaje (%)", "Estado Actual")
+} else{
+  
+  colnames(limni_r) <- c("Municipio", "Territorial", 
+                    "Fuente", "Promedio (m)", "Máximo (m)",
+                    "Mínimo", "Porcentaje (%)")}
+  
+} else{
+
+
+########################################Precip############################
+
+# Definimos temporalidad para extracción de datos
+
+comenzar <-  as.character(params$fechas[1])
+finalizar <-  as.character(params$fechas[2] + 1)
+
+
+# Leemos estaciones
+
+estaciones = read.csv("http://www.piraguacorantioquia.com.co/redes_nuevo/images/Estaciones_Piragua.csv")
+
+# Filtramos por territoriales (cambiar territorial en filter):
+# territorial == "XXXX"
+estaciones_pluvio = estaciones %>%
+  filter(tipo == "Pluviógrafo", territorial %in% params$terri)
+
+# Definimos función de lectura de datos
+
+get_data = function(estacion, inicio, final){
+  url="https://www.piraguacorantioquia.com.co/api/precipitacion/40?date_estacion__gte=2020-11-17&date_estacion__lt=2020-11-23&downloadfile"
+  url2 = param_set(url, "date_estacion__gte", inicio)
+  url3 = param_set(url2, "date_estacion__lt", final)
+  data = read.csv(gsub("40", estacion, url3))
+  data = na.omit(data)
+  data = data[!(data$fechas == ""), ] # Para borrar campos de fechas vacíos
+  data$fechas = as.POSIXct(data$fechas, "%Y-%m-%d %H-%M")
+  data2 = data %>%
+    group_by(fechas) %>%
+    dplyr::summarise(muestra = mean(muestra))
+}
+
+# Iteramos sobre las estaciones pluviográficas
+
+lluvia = list() # Creamos una lista vacía
+
+# Función de extracción y conversión de datos
+
+get_lluvia = function() {
+  
+  lluvia = list()
+  
+  # Guardamos en lista de listas todos los datasets de las estaciones 
+  # para una territorial en particular
+  for (i in 1:nrow(estaciones_pluvio)) {
+    
+    estacion = estaciones_pluvio$codigo[i]
+    lluvia[[i]] = get_data(estacion, comenzar, finalizar)
+    
+  }
+  # Agregamos una columna de municipios a cada dataframe de la lista
+  for (i in 1:length(lluvia)) {
+    
+    if (nrow(lluvia[[i]]) > 0) {
+      lluvia[[i]] = data.frame(lluvia[[i]],
+                               territorial = estaciones_pluvio[i,5],
+                               municipios = estaciones_pluvio[i,4],
+                               ubicacion = estaciones_pluvio[i,11])
+    }
+  }
+  #Para eliminar listas con 0 filas
+  lluvia = lluvia[sapply(lluvia, nrow) > 0]
+  #Creamos un dataframe global con la lista de estaciones que tienen datos
+  lluvia = do.call(rbind, lluvia)
+  
+}
+
+lluvia = get_lluvia()
+
+report_datos <-  difftime(max(lluvia$fechas), min(lluvia$fechas), 
+                              units = c("mins"))/5
+
+report_datos <- as.numeric(report_datos)
+
+#Agrupamos por municipios y hallamos su acumulado para la temporalidad dada
+lluvia2 <-  lluvia %>%
+  group_by(municipios, territorial, ubicacion) %>%
+  dplyr::summarise(muestra = sum(muestra))
+
+lluvia3 <- lluvia %>% 
+  group_by(municipios, territorial, ubicacion) %>% 
+  dplyr::summarise(count = n())
+
+lluvia4 <- data.frame(lluvia2, lluvia3$count)
+
+colnames(lluvia4) <- c("Municipio", "Territorial", 
+                    "Ubicación", "Precipitación", "Porcentaje")
+
+conteo = function(f){
+  diferencia = difftime(max(f), min(f), 
+                        units = c("mins"))/5
+}
+
+df_count <- lluvia %>% group_by(municipios, ubicacion) %>% 
+  summarise(dif = conteo(fechas))
+
+df_count$dif <- as.numeric(df_count$dif) 
+
+porce_count <- data.frame((lluvia4$Porcentaje*100)/df_count$dif)
+
+lluvia5 <- data.frame(lluvia4[,1:4], porce_count)
+
+colnames(lluvia5) <- c("Municipio", "Territorial", 
+                    "Ubicación", "Precipitación", "Porcentaje")
+
+lluvia5$Porcentaje <- round(lluvia5$Porcentaje, digits = 1)
+
+porc_prom <- round(mean(lluvia5$Porcentaje), digits = 1)
+
+n_estaciones <-  nrow(lluvia5)
+n_total <-  nrow(estaciones_pluvio)
+porcentaje <-  (n_estaciones*100)/n_total
+porcentaje <- round(porcentaje, digits = 1)
+
+if(params$est == T){
+  
+  estado <- c()
+
+max_fechas <- lluvia %>% 
+  group_by(municipios, ubicacion) %>% 
+  summarise(estado = max(as.Date(fechas)))
+
+f = c()
+max_fechas
+for (i in 1:nrow(max_fechas)) {
+  if(max_fechas[i,3] == Sys.Date()){
+    f[i] = "Activa"
+  } else{
+    f[i] = "Inactiva"
+  }
+}
+
+f <- data.frame(f)
+
+lluvia5 <- data.frame(lluvia5, f)
+
+
+colnames(lluvia5) <- c("Municipio", "Territorial", 
+                    "Ubicación", "Precipitación (mm)", "Porcentaje (%)", 
+                    "Estado actual")
+  
+} else{
+  
+  colnames(lluvia5) <- c("Municipio", "Territorial", 
+                    "Ubicación", "Precipitación (mm)", "Porcentaje (%)")
+  
+}
+
+
+}
+
+
+```
+
+
+## Operatividad estaciones
+
+El número de estaciones que reportaron datos en la temporalidad escogida fueron: `r n_estaciones`.
+
+El número de estaciones que actualmente posee el programa son: `r n_total`.
+
+El porcentaje de operatividad general en la temporalidad escogida fue de: `r porcentaje`%.
+
+El porcentaje de operatividad promedio, a nivel de transmisión de datos fue de: `r porc_prom`%.
+
+## Resumen información de estaciones
+
+A continuación se presenta un resumen de los datos obtenidos de nivel y porcentaje de operatividad en las estaciones automáticas analizadas. El porcentaje de operación se calculó en base a una tasa de reporte de 1 dato cada 5 minutos.
+
+
+```{r, echo = F}
+
+if(params$n == T) {
+  kbl(limni_r, booktabs = T, align = "c") %>%
+  kable_styling(latex_options =c("striped", "scale_down")) %>% 
+  kable_styling(position = "center")
+} else {
+  kbl(lluvia5, booktabs = T, align = "c") %>%
+  kable_styling(latex_options =c("striped", "scale_down")) %>% 
+  kable_styling(position = "center")
+}
+
+```
+
+
